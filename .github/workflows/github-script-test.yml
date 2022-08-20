@@ -19,12 +19,13 @@ jobs:
       - name: "Checkout"
         uses: actions/checkout@v2
         with:
+          path: kie-tools
           repository: tiagobento/kie-tools
           fetch-depth: 1
           ref: main
 
       - name: "Setup environment"
-        uses: ./.github/actions/setup-env
+        uses: ./kie-tools/.github/actions/setup-env
         with:
           os: ${{ matrix.os }}
 
@@ -32,20 +33,23 @@ jobs:
         id: pre_build_config
         uses: actions/github-script@v6
         with:
+          path: kie-tools
           result-encoding: string
           script: |
             const fs = require("fs");
-            
-            const pnpmWorkspacePackagesRootPaths = ["packages", "examples"].join("\n");
-            core.setOutput("pnpm_workspace_packages_root_paths", pnpmWorkspacePackagesRootPaths);
+            const path = require("path");
 
-            const nonSourceFilesPatterns = fs.readFileSync("./.github/supporting-files/ci/non-source-files-patterns.txt", "utf-8");
-            core.setOutput("non_source_files_patterns", nonSourceFilesPatterns);
+            const cwd = core.getInput("path");
             
-            const testSourceFilesPatterns = fs.readFileSync("./.github/supporting-files/ci/tests-source-files-patterns.txt", "utf-8");
+            const pnpmWorkspacePackagesRootPaths = ["packages", "examples"].map(p => path.join(cwd, p)).join("\n");
+            const nonSourceFilesPatterns = fs.readFileSync(path.join(cwd, "./.github/supporting-files/ci/non-source-files-patterns.txt"), "utf-8");
+            const testSourceFilesPatterns = fs.readFileSync(path.join(cwd, "./.github/supporting-files/ci/tests-source-files-patterns.txt"), "utf-8");
+            
+            core.setOutput("pnpm_workspace_packages_root_paths", pnpmWorkspacePackagesRootPaths);
+            core.setOutput("non_source_files_patterns", nonSourceFilesPatterns);
             core.setOutput("tests_source_files_patterns", testSourceFilesPatterns);
 
-      - name: "Test pre-build config"
+      - name: "Print pre-build config"
         shell: bash
         run: |
           echo "${{ steps.pre_build_config.outputs.pnpm_workspace_packages_root_paths }}" 
@@ -68,60 +72,12 @@ jobs:
           START_SERVER_AND_TEST_INSECURE: "true"
         shell: bash
         run: |
+          cd kie-tools
           pnpm bootstrap
           pnpm -r build:prod
 
-      - name: "Setup post-build config"
-        id: post_build_config
-        uses: actions/github-script@v6
-        with:
-          pnpm_workspace_packages_root_paths: ${{ steps.pre_build_config.outputs.pnpm_workspace_packages_root_paths }}
-          result-encoding: string
-          script: |
-            const fs = require("fs");
-            const path = require("path");
-            
-            const pnpmWorkspacePackagesRoots = core.getMultilineInput("pnpm_workspace_packages_root_paths");
-            console.log(pnpmWorkspacePackagesRoots)
-            
-            function prefixWithRoots(patterns) {
-              return patterns.split("\n").filter(p => p.trim() !== "").flatMap(p => pnpmWorkspacePackagesRoots.map(r => path.join(r, p))).join("\n");
-            }
-
-            async function globsToPaths(patternsOutputName, pathsOutputName, patternsFilePath) {
-              console.log(patternsOutputName, pathsOutputName, patternsFilePath);
-              const patterns = prefixWithRoots(fs.readFileSync(patternsFilePath, "utf-8"));
-              console.log(patterns);
-              console.log("↓");
-              const paths = await (await glob.create(patterns, { followSymbolicLinks: false })).glob();
-              console.log(paths);
-              console.log("-");
-              core.setOutput(patternsOutputName, patterns)
-              core.setOutput(pathsOutputName, paths.join("\n"));
-            }
-
-            await globsToPaths("tests_reports_patterns", "tests_reports_paths", "./.github/supporting-files/ci/tests-reports-patterns.txt")
-            await globsToPaths("integration_tests_reports_patterns", "integration_tests_reports_paths", "./.github/supporting-files/ci/integration-tests-reports-patterns.txt")
-            await globsToPaths("integration_tests_artifacts_patterns", "integration_tests_artifacts_paths", "./.github/supporting-files/ci/integration-tests-artifacts-patterns.txt")
-            await globsToPaths("build_artifacts_patterns", "build_artifacts_paths", "./.github/supporting-files/ci/build-artifacts-patterns.txt")
-
-      - name: "Test post-build config"
-        shell: bash
-        run: |
-          echo "patterns"
-          echo "-"
-          echo "${{ steps.post_build_config.outputs.tests_reports_patterns }}"
-          echo "${{ steps.post_build_config.outputs.integration_tests_reports_patterns }}" 
-          echo "${{ steps.post_build_config.outputs.integration_tests_artifacts_patterns }}" 
-          echo "${{ steps.post_build_config.outputs.build_artifacts_patterns }}" 
-          echo "paths"
-          echo "-"
-          echo "${{ steps.post_build_config.outputs.tests_reports_paths }}"
-          echo "${{ steps.post_build_config.outputs.integration_tests_reports_paths }}" 
-          echo "${{ steps.post_build_config.outputs.integration_tests_artifacts_paths }}" 
-          echo "${{ steps.post_build_config.outputs.build_artifacts_paths }}"
-
-      - name: "Check tests and integration tests results (`main` only)"
+      - name: "Check tests result (`main` only)"
+        if: always()
         uses: mikepenz/action-junit-report@1b47bb811362f3d8d753fc148cb7a13ec9e55570
         with:
           check_name: "-"
@@ -131,7 +87,57 @@ jobs:
             ${{ steps.post_build_config.outputs.tests_reports_patterns }}
             ${{ steps.post_build_config.outputs.integration_tests_reports_patterns }}
 
-      - name: "Zip stuff"
+      - name: "Setup post-build config"
+        uses: actions/github-script@v6
+        id: post_build_config
+        if: always()
+        with:
+          path: kie-tools
+          pnpm_workspace_packages_root_paths: ${{ steps.pre_build_config.outputs.pnpm_workspace_packages_root_paths }}
+          result-encoding: string
+          script: |
+            const fs = require("fs");
+            const path = require("path");
+            
+            const cwd = core.getInput("path");
+            
+            const pnpmWorkspacePackagesRoots = core.getMultilineInput("pnpm_workspace_packages_root_paths");
+            console.log(pnpmWorkspacePackagesRoots)
+            
+            function prefixWithRoots(patterns) {
+              return patterns.split("\n").filter(p => p.trim() !== "").flatMap(p => pnpmWorkspacePackagesRoots.map(r => path.join(r, p))).join("\n");
+            }
+
+            async function outputPatternsPrefixedWithRoots(outputName, patternsFilePath) {
+              const patterns = prefixWithRoots(fs.readFileSync(patternsFilePath, "utf-8"));
+              console.log(outputName + ":");
+              console.log(patterns);
+              console.log("-");
+              core.setOutput(outputName, patterns)
+            }
+
+            await outputPatternsPrefixedWithRoots("tests_reports_patterns", path.join(cwd, "./.github/supporting-files/ci/tests-reports-patterns.txt"))
+            await outputPatternsPrefixedWithRoots("integration_tests_reports_patterns", path.join(cwd, "./.github/supporting-files/ci/integration-tests-reports-patterns.txt"))
+            await outputPatternsPrefixedWithRoots("integration_tests_artifacts_patterns", path.join(cwd, "./.github/supporting-files/ci/integration-tests-artifacts-patterns.txt"))
+            await outputPatternsPrefixedWithRoots("build_artifacts_patterns", path.join(cwd, "./.github/supporting-files/ci/build-artifacts-patterns.txt"))
+
+      - name: "Print post-build config"
+        if: always()
+        shell: bash
+        run: |
+          echo "${{ steps.post_build_config.outputs.tests_reports_patterns }}"
+          echo "${{ steps.post_build_config.outputs.integration_tests_reports_patterns }}" 
+          echo "${{ steps.post_build_config.outputs.integration_tests_artifacts_patterns }}" 
+          echo "${{ steps.post_build_config.outputs.build_artifacts_patterns }}" 
+
+      - name: "Install zip on Windows"
+        if: runner.os == 'windos-latest'
+        shell: bash
+        run: |
+          choco install zip --version 3.0 -y
+
+      - name: "Zip artifacts and reports"
+        if: always()
         env:
           TESTS_REPORTS_PATTERNS: >-
             ${{ steps.post_build_config.outputs.tests_reports_patterns }}
@@ -143,44 +149,41 @@ jobs:
             ${{ steps.post_build_config.outputs.build_artifacts_patterns }}
         shell: bash
         run: |
-          echo "Running 'zip -r ./test-reports.zip ${TESTS_REPORTS_PATTERNS[@]}'"
-          zip -r ./test-reports.zip $TESTS_REPORTS_PATTERNS || echo UEsFBgAAAAAAAAAAAAAAAAAAAAAAAA== | base64 -d > ./test-reports.zip
-          echo "Running 'zip -r ./integration-tests-reports.zip ${INTEGRATION_TESTS_REPORTS_PATTERNS[@]}'"
-          zip -r ./integration-tests-reports.zip $INTEGRATION_TESTS_REPORTS_PATTERNS || echo UEsFBgAAAAAAAAAAAAAAAAAAAAAAAA== | base64 -d > ./integration-tests-reports.zip
-          echo "Running 'zip -r ./integration-tests-artifacts.zip ${INTEGRATION_TESTS_ARTIFACTS_PATTERNS[@]}'"
-          zip -r ./integration-tests-artifacts.zip $INTEGRATION_TESTS_ARTIFACTS_PATTERNS || echo UEsFBgAAAAAAAAAAAAAAAAAAAAAAAA== | base64 -d > ./integration-tests-artifacts.zip
-          echo "Running 'zip -r ./build-artifacts.zip ${BUILD_ARTIFACTS_PATTERNS[@]}'"
-          zip -r ./build-artifacts.zip $BUILD_ARTIFACTS_PATTERNS || echo UEsFBgAAAAAAAAAAAAAAAAAAAAAAAA== | base64 -d > ./build-artifacts.zip
+          output_empty_zip () { echo UEsFBgAAAAAAAAAAAAAAAAAAAAAAAA== | base64 -d; }
+          zip -r $RUNNER_TEMP/test-reports.zip $TESTS_REPORTS_PATTERNS || output_empty_zip > $RUNNER_TEMP/test-reports.zip
+          zip -r $RUNNER_TEMP/integration-tests-reports.zip $INTEGRATION_TESTS_REPORTS_PATTERNS || output_empty_zip > $RUNNER_TEMP/integration-tests-reports.zip
+          zip -r $RUNNER_TEMP/integration-tests-artifacts.zip $INTEGRATION_TESTS_ARTIFACTS_PATTERNS || output_empty_zip > $RUNNER_TEMP/integration-tests-artifacts.zip
+          zip -r $RUNNER_TEMP/build-artifacts.zip $BUILD_ARTIFACTS_PATTERNS || output_empty_zip > $RUNNER_TEMP/build-artifacts.zip
           ls -la
 
       - name: "Upload test reports"
         uses: actions/upload-artifact@v3
+        if: always()
         with:
-          name: ${{ matrix.os }})__test-reports
-          if-no-files-found: warn
+          name: ${{ matrix.os }}__test-reports
           path: |
-            ./test-reports.zip
+            $RUNNER_TEMP/test-reports.zip
 
       - name: "Upload integration tests reports"
         uses: actions/upload-artifact@v3
+        if: always()
         with:
-          name: ${{ matrix.os }})__integration-tests-reports
-          if-no-files-found: warn
+          name: ${{ matrix.os }}__integration-tests-reports
           path: |
-            ./integration-tests-reports.zip
+            $RUNNER_TEMP/integration-tests-reports.zip
 
       - name: "Upload integration tests artifacts"
         uses: actions/upload-artifact@v3
+        if: always()
         with:
-          name: ${{ matrix.os }})__integration-tests-artifacts
-          if-no-files-found: warn
+          name: ${{ matrix.os }}__integration-tests-artifacts
           path: |
-            ./integration-tests-artifacts.zip
+            $RUNNER_TEMP/integration-tests-artifacts.zip
 
       - name: "Upload build artifacts reports"
         uses: actions/upload-artifact@v3
+        if: always()
         with:
-          name: ${{ matrix.os }})__build-artifacts
-          if-no-files-found: warn
+          name: ${{ matrix.os }}__build-artifacts
           path: |
-            ./build-artifacts.zip
+            $RUNNER_TEMP/build-artifacts.zip
