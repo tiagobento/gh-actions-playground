@@ -1,0 +1,186 @@
+name: "GitHub Actions :: Playground :: GitHub Script Action :: Test"
+
+on:
+  push:
+    branches: [main]
+
+jobs:
+  run:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - name: "Support longpaths"
+        if: matrix.os == 'windows-latest'
+        run: git config --system core.longpaths true
+
+      - name: "Checkout"
+        uses: actions/checkout@v2
+        with:
+          repository: tiagobento/kie-tools
+          fetch-depth: 1
+          ref: main
+
+      - name: "Setup environment"
+        uses: ./.github/actions/setup-env
+        with:
+          os: ${{ matrix.os }}
+
+      - name: "Setup pre-build config"
+        id: pre_build_config
+        uses: actions/github-script@v6
+        with:
+          result-encoding: string
+          script: |
+            const fs = require("fs");
+            
+            const pnpmWorkspacePackagesRootPaths = ["packages", "examples"].join("\n");
+            core.setOutput("pnpm_workspace_packages_root_paths", pnpmWorkspacePackagesRootPaths);
+
+            const nonSourceFilesPatterns = fs.readFileSync("./.github/supporting-files/ci/non-source-files-patterns.txt", "utf-8");
+            core.setOutput("non_source_files_patterns", nonSourceFilesPatterns);
+            
+            const testSourceFilesPatterns = fs.readFileSync("./.github/supporting-files/ci/tests-source-files-patterns.txt", "utf-8");
+            core.setOutput("tests_source_files_patterns", testSourceFilesPatterns);
+
+      - name: "Test pre-build config"
+        shell: bash
+        run: |
+          echo "${{ steps.pre_build_config.outputs.pnpm_workspace_packages_root_paths }}" 
+          echo "${{ steps.pre_build_config.outputs.non_source_files_patterns }}" 
+          echo "${{ steps.pre_build_config.outputs.tests_source_files_patterns }}" 
+
+      - name: "Build"
+        id: build
+        env:
+          WEBPACK__minimize: "false"
+          WEBPACK__tsLoaderTranspileOnly: "false"
+          KIE_TOOLS_BUILD__runLinters: "true"
+          KIE_TOOLS_BUILD__runTests: "true"
+          KIE_TOOLS_BUILD__runIntegrationTests: ${{ matrix.os == 'ubuntu-latest' }}
+          KIE_TOOLS_BUILD__buildContainerImages: "true"
+          KIE_TOOLS_BUILD__buildExamples: "true"
+          KIE_TOOLS_BUILD__ignoreTestFailures: "true"
+          KIE_TOOLS_BUILD__ignoreIntegrationTestFailures: "true"
+          DISPLAY: ":99.0"
+          START_SERVER_AND_TEST_INSECURE: "true"
+        shell: bash
+        run: |
+          pnpm bootstrap
+          pnpm -r build:prod
+
+      - name: "Setup post-build config"
+        id: post_build_config
+        uses: actions/github-script@v6
+        with:
+          pnpm_workspace_packages_root_paths: ${{ steps.pre_build_config.outputs.pnpm_workspace_packages_root_paths }}
+          result-encoding: string
+          script: |
+            const fs = require("fs");
+            const path = require("path");
+            
+            const pnpmWorkspacePackagesRoots = core.getMultilineInput("pnpm_workspace_packages_root_paths");
+            console.log(pnpmWorkspacePackagesRoots)
+            
+            function prefixWithRoots(patterns) {
+              return patterns.split("\n").filter(p => p.trim() !== "").flatMap(p => pnpmWorkspacePackagesRoots.map(r => path.join(r, p))).join("\n");
+            }
+
+            async function globsToPaths(patternsOutputName, pathsOutputName, patternsFilePath) {
+              console.log(patternsOutputName, pathsOutputName, patternsFilePath);
+              const patterns = prefixWithRoots(fs.readFileSync(patternsFilePath, "utf-8"));
+              console.log(patterns);
+              console.log("↓");
+              const paths = await (await glob.create(patterns, { followSymbolicLinks: false })).glob();
+              console.log(paths);
+              console.log("-");
+              core.setOutput(patternsOutputName, patterns)
+              core.setOutput(pathsOutputName, paths.join("\n"));
+            }
+
+            await globsToPaths("tests_reports_patterns", "tests_reports_paths", "./.github/supporting-files/ci/tests-reports-patterns.txt")
+            await globsToPaths("integration_tests_reports_patterns", "integration_tests_reports_paths", "./.github/supporting-files/ci/integration-tests-reports-patterns.txt")
+            await globsToPaths("integration_tests_artifacts_patterns", "integration_tests_artifacts_paths", "./.github/supporting-files/ci/integration-tests-artifacts-patterns.txt")
+            await globsToPaths("build_artifacts_patterns", "build_artifacts_paths", "./.github/supporting-files/ci/build-artifacts-patterns.txt")
+
+      - name: "Test post-build config"
+        shell: bash
+        run: |
+          echo "patterns"
+          echo "-"
+          echo "${{ steps.post_build_config.outputs.tests_reports_patterns }}"
+          echo "${{ steps.post_build_config.outputs.integration_tests_reports_patterns }}" 
+          echo "${{ steps.post_build_config.outputs.integration_tests_artifacts_patterns }}" 
+          echo "${{ steps.post_build_config.outputs.build_artifacts_patterns }}" 
+          echo "paths"
+          echo "-"
+          echo "${{ steps.post_build_config.outputs.tests_reports_paths }}"
+          echo "${{ steps.post_build_config.outputs.integration_tests_reports_paths }}" 
+          echo "${{ steps.post_build_config.outputs.integration_tests_artifacts_paths }}" 
+          echo "${{ steps.post_build_config.outputs.build_artifacts_paths }}"
+
+      - name: "Check tests and integration tests results (`main` only)"
+        uses: mikepenz/action-junit-report@1b47bb811362f3d8d753fc148cb7a13ec9e55570
+        with:
+          check_name: "-"
+          annotate_only: true
+          fail_on_failure: true
+          report_paths: |
+            ${{ steps.post_build_config.outputs.tests_reports_patterns }}
+            ${{ steps.post_build_config.outputs.integration_tests_reports_patterns }}
+
+      - name: "Zip stuff"
+        env:
+          TESTS_REPORTS_PATTERNS: >-
+            ${{ steps.post_build_config.outputs.tests_reports_patterns }}
+          INTEGRATION_TESTS_REPORTS_PATTERNS: >-
+            ${{ steps.post_build_config.outputs.integration_tests_reports_patterns }}
+          INTEGRATION_TESTS_ARTIFACTS_PATTERNS: >-
+            ${{ steps.post_build_config.outputs.integration_tests_artifacts_patterns }}
+          BUILD_ARTIFACTS_PATTERNS: >-
+            ${{ steps.post_build_config.outputs.build_artifacts_patterns }}
+        shell: bash
+        run: |
+          echo "Running 'zip -r ./test-reports.zip ${TESTS_REPORTS_PATTERNS[@]}'"
+          zip -r ./test-reports.zip $TESTS_REPORTS_PATTERNS || echo UEsFBgAAAAAAAAAAAAAAAAAAAAAAAA== | base64 -d > ./test-reports.zip
+          echo "Running 'zip -r ./integration-tests-reports.zip ${INTEGRATION_TESTS_REPORTS_PATTERNS[@]}'"
+          zip -r ./integration-tests-reports.zip $INTEGRATION_TESTS_REPORTS_PATTERNS || echo UEsFBgAAAAAAAAAAAAAAAAAAAAAAAA== | base64 -d > ./integration-tests-reports.zip
+          echo "Running 'zip -r ./integration-tests-artifacts.zip ${INTEGRATION_TESTS_ARTIFACTS_PATTERNS[@]}'"
+          zip -r ./integration-tests-artifacts.zip $INTEGRATION_TESTS_ARTIFACTS_PATTERNS || echo UEsFBgAAAAAAAAAAAAAAAAAAAAAAAA== | base64 -d > ./integration-tests-artifacts.zip
+          echo "Running 'zip -r ./build-artifacts.zip ${BUILD_ARTIFACTS_PATTERNS[@]}'"
+          zip -r ./build-artifacts.zip $BUILD_ARTIFACTS_PATTERNS || echo UEsFBgAAAAAAAAAAAAAAAAAAAAAAAA== | base64 -d > ./build-artifacts.zip
+          ls -la
+
+      - name: "Upload test reports"
+        uses: actions/upload-artifact@v3
+        with:
+          name: ${{ matrix.os }})__test-reports
+          if-no-files-found: warn
+          path: |
+            ./test-reports.zip
+
+      - name: "Upload integration tests reports"
+        uses: actions/upload-artifact@v3
+        with:
+          name: ${{ matrix.os }})__integration-tests-reports
+          if-no-files-found: warn
+          path: |
+            ./integration-tests-reports.zip
+
+      - name: "Upload integration tests artifacts"
+        uses: actions/upload-artifact@v3
+        with:
+          name: ${{ matrix.os }})__integration-tests-artifacts
+          if-no-files-found: warn
+          path: |
+            ./integration-tests-artifacts.zip
+
+      - name: "Upload build artifacts reports"
+        uses: actions/upload-artifact@v3
+        with:
+          name: ${{ matrix.os }})__build-artifacts
+          if-no-files-found: warn
+          path: |
+            ./build-artifacts.zip
