@@ -3,14 +3,6 @@ name: "GitHub Actions :: Playground :: Run command"
 on:
   workflow_dispatch:
     inputs:
-      runner:
-        type: string
-        required: true
-        description: ""
-      shell:
-        type: string
-        required: true
-        description: ""
       command:
         type: string
         required: true
@@ -24,6 +16,11 @@ jobs:
         os: [ubuntu-latest, macos-latest, windows-latest]
     runs-on: ${{ matrix.os }}
     steps:
+      - name: "Print contexts"
+        shell: bash
+        run: |
+          ${{ toJson(github) }}
+
       - name: "Run command"
         shell: bash
         run: |
