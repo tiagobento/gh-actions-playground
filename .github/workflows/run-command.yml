@@ -1,6 +1,8 @@
 name: "GitHub Actions :: Playground :: Run command"
 
 on:
+  push: 
+    branches: [main]
   workflow_dispatch:
     inputs:
       command:
@@ -19,7 +21,7 @@ jobs:
       - name: "Print contexts"
         shell: bash
         run: |
-          ${{ toJson(github) }}
+          echo "${{ toJson(github) }}"
 
       - name: "Run command"
         shell: bash
