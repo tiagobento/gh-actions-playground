@@ -46,4 +46,4 @@ jobs:
         shell: bash
         run: |
           cd kie-tools
-          pnpm install --workspace-root --strict-peer-dependencies=false -F 'kie-tools-root...'
+          pnpm bootstrap:root
